@@ -1,0 +1,16 @@
+---
+title: "City sizes"
+format: html
+---
+
+## Introduction
+Here I attempt to calculate the scaling factor for city sizes. The plan is to get the data from a csv download and take it from there.
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+cities_data_raw <- read_csv()
+```
+
