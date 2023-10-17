@@ -1,0 +1,5 @@
+"0","test <- GET(""/api/explore/v2.1/catalog/datasets/geonames-all-cities-with-a-population-500/records?limit=50&offset=0&refine=country%3A%22Afghanistan%22"")
+"
+"2","Error in curl::curl_fetch_memory(url, handle = handle) : 
+  URL using bad/illegal format or missing URL
+"

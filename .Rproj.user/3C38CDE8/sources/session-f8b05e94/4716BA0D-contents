@@ -1,0 +1,98 @@
+---
+title: "City sizes"
+format: html
+---
+
+## Introduction
+Here I attempt to calculate the scaling factor for city sizes. The plan is to use the csv downloaded from: https://documentation-resources.opendatasoft.com/explore/dataset/doc-geonames-cities-5000/export/ to get a dataset of cities. After that I will attempt to build an algorithm to calculate the scaling parameters and check if it acutally matches the data as expected. The plan is to finish with a map where different cross-over points can be applied and the scaling parameters for different cities come up. At this stage, the whole thing can get wrapped into a Shiny app for exploration
+
+```{r}
+library(tidyverse)
+library(httr)
+```
+
+```{r}
+cities_data_raw <- read_delim("geonames_cities_5000.csv", delim = ";")
+
+cities_data <- cities_data_raw |>
+  select(name, location, population, `country code`) |>
+  rename("country" = 4) |>
+  filter(population > 0)
+```
+
+```{r}
+### Get list of country codes
+
+country_codes <- unique(cities_data$country)
+
+```
+
+```{r}
+### Plot some country codes
+
+cities_data |>
+  filter(country == country_codes[1]) |>
+  mutate(log_pop = log10(population)) |>
+  ggplot(aes(x = log_pop)) +
+  geom_histogram() +
+  labs(
+    title = country_codes[1]
+  )
+
+cities_data |>
+  filter(country == country_codes[21]) |>
+  mutate(log_pop = log10(population)) |>
+  ggplot(aes(x = log_pop)) +
+  geom_histogram() +
+  labs(
+    title = country_codes[21]
+  )
+
+cities_data |>
+  filter(country == country_codes[41]) |>
+  mutate(log_pop = log10(population)) |>
+  ggplot(aes(x = log_pop)) +
+  geom_histogram() +
+  labs(
+    title = country_codes[41]
+  )
+
+cities_data |>
+  filter(country == country_codes[61]) |>
+  mutate(log_pop = log10(population)) |>
+  ggplot(aes(x = log_pop)) +
+  geom_histogram() +
+  labs(
+    title = country_codes[61]
+  )
+
+cities_data |>
+  filter(country == country_codes[81]) |>
+  mutate(log_pop = log10(population)) |>
+  ggplot(aes(x = log_pop)) +
+  geom_histogram() +
+  labs(
+    title = country_codes[81]
+  )
+
+cities_data |>
+  filter(country == country_codes[101]) |>
+  mutate(log_pop = log10(population)) |>
+  ggplot(aes(x = log_pop)) +
+  geom_histogram() +
+  labs(
+    title = country_codes[101]
+  )
+
+cities_data |>
+  filter(country == "CN") |>
+  mutate(log_pop = log10(population)) |>
+  ggplot(aes(x = log_pop)) +
+  geom_histogram() +
+  labs(
+    title = "CN"
+  )
+
+```
+Will need to explore country by country, choosing preferred targets. Some cleaning will need done - for example it is hard to believe that China has a dearth of the smaller cities - rather this looks like sampling error :)
+

@@ -1,0 +1,481 @@
+---
+title: "The average Data Analyst job description"
+author: "Pete Jacobsson"
+from: markdown+emoji
+format:
+  html:
+    theme: simplex
+    css: styles.css
+    sansfont: Corbel
+    mainfont: Cambria
+---
+
+```{r, include = FALSE}
+library(httr)
+library(tidyverse)
+library(jsonlite)
+library(rvest)
+library(reticulate)
+```
+
+Hello everyone! The purpose of this little project is to work out what makes an average data analyst. If, like me, you've been around for a few years longer than the end of your undergraduate degree, you might also have the problem of how to figure out what to *cut* from your CV. Where this gets really interesting is the soft skills: should I push communication, or problem solving for example? Now, when applying for a job with a known job description this is not an issue - you just hack away things that match that description least. But what about the CV you take to conferences, networking events, or send to recruiters? If you're anything like me, you know that six pages is way too long, but what are the things to hack away? In principle, you can ask for a CV writing service advice. But that will cost you, and if you're a scrooge (like myself), paying is a deal breaker.
+
+So I had a different idea - lets check what the average job description is and hack away things to match it. How to get the typical job description?
+
+-   Get a lot of job descriptions (use API :grinning:)
+
+-   Filter out the important stuff (use an LLM :smiley_cat:)
+
+-   Analyze the results, work out what the descriptions require and hack your CV accordingly :scissors:
+
+
+## Get the data I: API the websties
+I will be looking for Data Analyst job posts from Switzerland. I'll use [Adzuna API](https://www.adzuna.ch/).
+
+The core of the API request looks something like this:
+```{r}
+##This chunk is concerned with getting the API function working
+
+## Write a function to get any given page. After that I can just iterate while there are still jobs to find :)
+
+get_adzuna_api <- function(api_id, api_key, page, 
+                           key_words = c("data", "analyst"), country = "ch") { #API ID and key are variables, so that they can remain secret
+  
+  key_words <- stringr::str_c(key_words[1], "%20", key_words[2]) #Can only take two key words. All needed for most data professions
+  api_call_string <- stringr::str_c("http://api.adzuna.com/v1/api/jobs/", 
+                                    country, "/search/", page, "?app_id=", 
+                                    api_id, "&app_key=", api_key,
+                                    "&results_per_page=20&what=", key_words,
+                                    "&max_days_old=730&salary_include_unknown=1&content-type=application/json")
+  api_return <- GET(api_call_string)
+  api_return_text <- content(api_return, "text")
+  api_return_df <- jsonlite::fromJSON(api_return_text)
+  
+  api_return_df$results
+}
+```
+
+
+```{r}
+## Test the function
+test <- get_adzuna_api(
+  readLines("/home/pete/Documents/adzuna_api.txt")[1], 
+  readLines("/home/pete/Documents/adzuna_api.txt")[2], 2)
+
+
+test$location$display_name
+
+```
+
+
+```{r}
+## This code block is about removing unwanted columns from the API response and renaming other ones.
+## Functionalizing for easier integration into the automated pipeline downstream
+
+clean_adzuna_response <- function(adzuna_response) {
+  response_cleaned <- data.frame(
+    date_posted = adzuna_response$created,
+    job_title = adzuna_response$title,
+    company = adzuna_response$company$display_name,
+    location = adzuna_response$location$display_name,
+    website = adzuna_response$redirect_url
+  ) |>
+    filter(str_detect(website, "details")) #Adzuna links quite a few instances of external job boards
+  
+  
+  response_cleaned
+}
+```
+
+```{r}
+##Test clean_adzuna_response
+test2 <- clean_adzuna_response(test)
+write_csv(test2, "test_returns.csv")
+```
+
+
+
+
+## Get the Data II: web-scrape
+Because Adzuna API provides only snippets, we don't get the actual job descriptions to pass to CHat API for analysis. Now, what we do get, is links tio the Adzuna website. So what we can do to get the relevant data is to web scrape the list of pages provided and add the results to the outcomes table
+```{r}
+##Lets get a URL to visit
+##Note: the website links are out of date at time of publication.
+##For reproduction needs an up-to-date test.returns.csv
+test2 <- read_csv("test_returns.csv")
+test2$website[4]
+```
+
+```{r}
+### Parsing function to make loops easier to work with.
+
+parse_adzuna_data <- function (adzuna_http){
+  adzuna_html_response <- read_html(adzuna_http) #Get the website
+  adzuna_body <- adzuna_html_response |> #Extract the body of the job ad
+    html_nodes(".adp-body") |>
+    html_text()
+  
+  adzuna_body
+}
+
+```
+
+
+```{r}
+##Test the function: run for the length of a whole DF
+##Use for loop to ensure spacing between website hits
+##Pass if test_vector contains 15 long extracted strings
+
+### Commented out - don't want to run loops hitting people's websites by accident :)
+# test_vector <- c()
+# 
+# for (i in 1:nrow(test2)) { #test2 contains the readings from the newest set of previous tests
+#   adzuna_description <- parse_adzuna_data(test2$website[i])
+#   test_vector <- c(test_vector, adzuna_description)
+#   Sys.sleep(30)
+# }
+
+for (item in test_vector) {
+  item_trunc <- str_trunc(item, 50)
+  print(item_trunc)
+}
+```
+
+We have a working webscrape. Now time to start getting the relevant skills.
+
+## Get the data III Skills and experience extraction with Chat GPT
+
+The objective here is to develop a GPT prompt that will take on a string of letters from the job descripitons, extract relevant data (skills and experience, divided into different categories - as well as translate things into English beforehand when relevant), and return a .json file for each prompt run. In an ideal world I'd run this multiple times for each job description using a high temperature setting on the GPT - but I have only a free account and I also lack the days and weeks to do it through the free version
+
+```{python}
+### Following the method from this course: https://www.deeplearning.ai/short-courses/chatgpt-prompt-engineering-for-developers/
+import openai
+import os
+import time
+
+##COMMENT UP THIS CODE!!!
+with open('/home/pete/Documents/gpt_key.txt') as t:
+  openai.api_key = t.readlines()[0].strip("\n")
+
+
+def get_completion(prompt, model="gpt-3.5-turbo", temperature = 0):
+    messages = [{"role": "user", "content": prompt}]
+    response = openai.ChatCompletion.create(
+        model=model,
+        messages=messages,
+        temperature=temperature, # this is the degree of randomness of the model's output
+    )
+    return response.choices[0].message["content"]
+
+```
+
+```{python}
+###Test connection
+get_completion("Can you please tell me if I'm connected to GPT?")
+```
+
+```{r}
+##Get a return to work with for dev
+test3 <- parse_adzuna_data(test2$website[2])
+test3
+```
+
+
+```{python}
+### Now lets pass a job description to Chat GPT and build a prompt
+adzuna_description = r.test3
+print(adzuna_description)
+```
+
+```{python}
+
+def summarize_adzuna(adzuna_description):
+  adzuna_summary = get_completion(
+    "Dear Chat GPT, could you please conduct the following actions on the test in square brackets: Identify all skills, characteristics and qualifications        required for the job and return them as itemized points in English. Split those into individual skills, with no more than two words per skill. Provide the return in JSON format please! [" + adzuna_description +"]"
+  )
+  return(adzuna_summary)
+
+
+```
+
+```{python}
+test4 =  summarize_adzuna(r.test3)
+print(test4)
+```
+
+
+
+So we have a working prompt that gives us returns in a JSON format. This is almost the "get the data" bit done. Now the final part: getting the whole thing to work on a loop, so I don't need to do countless clicks.
+
+## Get the data IV: Set up the loop
+
+To set up the loop to extract the data from the Adzuna website, we need to do a few things.
+* First, we need to run the API and get the links on which to webscrape
+* Second, we need to webscrape
+* Third, we need to run the extraction of data via the GPT prompt
+* Fourth, we need to put the GPT data into something that may store it.
+
+There are two ways of approaching this. One would be two build a function taking the whole process from start to finish and depositing the results into a designated file. The other approach is to complete each step for all the data and then iterate on the results. While I find the former approach way more aesthetically pleasing, it also brings in some unwanted complexity: the API query returns up to twenty links, which would require a somewhat more messy code.
+
+Instead, I'll go with a two step process:
+
+1. I'll run a loop to get all the API responses
+2. I will then run the scraping and GPT assessment as a single function, looping through the website addressed obtained from the API.
+
+Hence we retain some simplicity, while also ensuring that we make alternate web scraping and GPT calls, with the nice added advantage of not overburdening either side, or having to loose time by introducing high Sys.sleep() values.
+
+### Execute the API calls
+
+As we do not know in advance how many relevant API pages there are in advance, here I decided to use a while loop that terminates when no new results are being retrieved.
+```{r}
+
+n_responses <- 20 ## Lets not turn off the loop before we start
+page <- 1 ## Start at page 1
+adzuna_api_returns_20jul23 <- data.frame()  ##Take note of date when responses collected
+
+while (n_responses > 0) {
+  
+  current_response <- get_adzuna_api(
+    readLines("/home/pete/Documents/adzuna_api.txt")[1], 
+    readLines("/home/pete/Documents/adzuna_api.txt")[2], page) ##Run the API.
+  
+  page <- page + 1 #Increase the page number.
+  n_responses <-nrow(current_response) ## Check response count for the purposes of running the loop.
+  
+  current_response <- clean_adzuna_response(current_response) ## Different API returns give different numbers of columns. This should standardize and prevent crashes.
+  
+  adzuna_api_returns_20jul23 <- rbind(adzuna_api_returns_20jul23,
+                                          current_response) ## Bind to general results table.
+  
+  Sys.sleep(3) ##This is to make sure that we do not hit the 25 hits per minute limit on the API.
+}
+
+```
+
+So this ended in a crash-out when the API returned empty. Normally this would be a bad things, but at this stage all I needed was the loop to finish - which it did. We now have a data frame containing some basic data on the jobs: date posted, job title, company name, location within Switzerland and... the link to the description, all ready for scraping. Now lets set up the reminder of the pipeline. Before moving on, lets save the results.
+```{r}
+write_rds(adzuna_api_returns_20jul23, "adzuna_api_returns_20jul23.rds") ## Getting to use RDS format a bit more often.
+```
+
+
+
+### Webscraping and analysis with GPT
+
+Now lets turn to the next step: we want to wrap a function around the webscrape and the GPT ask.
+```{r}
+execute_scrape_and_prompt <- function (adzuna_address){
+  adzuna_raw_return <- parse_adzuna_data(adzuna_address)
+  py$summarize_adzuna(adzuna_raw_return) ## The py$ calls from the python side of the environment
+}
+
+```
+
+```{r}
+test5 <- execute_scrape_and_prompt(adzuna_api_returns_14jul23$website[1])
+test5
+```
+
+Now that the wrapper is written and tested, lets run the extraction loop
+```{r}
+adzuna_api_returns_14jul23 <- readRDS("adzuna_api_returns_14jul23.rds")
+adzuna_api_returns_20jul23 <- readRDS("adzuna_api_returns_20jul23.rds")
+
+adzuna_api_returns <- rbind(adzuna_api_returns_14jul23, 
+                            adzuna_api_returns_20jul23) |>
+  distinct()
+
+```
+
+```{r}
+skills <- c()
+
+
+for (i in 1:nrow(adzuna_api_returns)) {
+  
+  json_return <- TRUE ### Keep the return empty in case a webscrape or GPT call fails - we don't want to double record same entry
+  try({   ###The try function is here in case any web scrape fails
+    json_return <- execute_scrape_and_prompt(
+      adzuna_api_returns$website[i]
+      ) |>
+      fromJSON()
+
+  }, silent = TRUE
+  )
+  
+  if (is.logical(json_return)) {  ##If JSON return is logical, it means that something above failed, so we want to have an empty entry
+    skills_from_return <- c()
+    } else {
+    skills_from_return <- unlist(json_return)
+    }
+  
+  skills <- c(skills, skills_from_return)
+  json_return <- TRUE ### Keep the return empty in case a webscrape or GPT call fails - we don't want to double record same entry
+  
+  Sys.sleep(30) ## Given the time to webscrape and call GPT this should be redundant... but lets be polite.
+}
+
+write_rds(skills, "adzuna_skills.rds")
+
+
+```
+
+
+## Clean the data: Address multi-element keywords
+
+Chat GPT is very human like. Not only can it hold a conversation, tell tales of pink unicorns, but also it makes a mess of data entry. Lets explore how much of a mess it made when summarizing the job descriptions from web scraping.
+
+```{r}
+skills <- read_rds("adzuna_skills.rds") |>
+  str_to_lower()
+
+skills_df <- data.frame(skills = skills) |>
+  group_by(skills) |>
+  summarize(
+    keyword_count = n()
+  ) |>
+  arrange(desc(keyword_count))
+```
+
+
+Given the size of the skills string, calling GPT again to resolve is not actually viable (I tried). Instead, we can extract the key categories with some old fashioned cleaning.
+
+We can start by reviewing thelist above and finding some patterns to search for. This will be a manual process, but it will help filter out anything not immediately relevant, or things not applicable in my particular case (e.g. some HR jobs seem to have found their way into the selection).
+
+The list of string to search for is quite long (40+ items to consolidate). The selection contains items that can be found repeating throughout the job decriptions (for example "analytical skills" makes multiple appearences under various guises - to catch it, I use the term "analyt"). Lets start making our way through it.
+
+```{r}
+## This will be easiest to do by looping over the key terms
+key_terms <- c("analy", "english", "german", "french", "italian",
+               "excel", "python", "flexib", "business", "power", "azure", "aws", 
+               "creativ", "curio", "detail", "communicat|present", "report", "tableau",
+               "data quality", "trend", "vba", "project", "agile", 
+               "cloud", "compliance", "cooper|collab|team|interpers", "dashboard", "warehouse", 
+               "decision", "consulting", "sap", "data mana", "machine learn|ml",
+               "kpi", "leadership", "sql", "automation", "research", "reliab",
+               "rest|api", "stakeholder", "problem", "(?<!\\w)r(?!\\w)",
+               "logist"
+               )
+
+skills_df <- data.frame(key_terms = c(), count = c())
+
+for (term in key_terms) {
+  skill_count <- str_extract(skills, term) |>
+    na.omit() |>
+    length()
+  
+  skills_df <- skills_df |>
+    rbind(c(term, skill_count))
+  
+}
+
+skills_df <- skills_df |>
+  rename(
+    term =  1, count = 2
+  ) |>
+  mutate(count = as.numeric(count)) |> ##Note count got converted to chr silently in the previous step
+  arrange(desc(count))
+
+```
+
+```{r}
+###Transform abbreviations back to human readables
+skills_df <- skills_df |>
+  mutate(
+    term = case_when(   ### I could have used the default here to just focus on the terms that needed mending, but I decided I wanted nice, standardized names on the graph.
+      term == "analy" ~ "Analytics",
+      term == "english" ~ "English",
+      term == "german" ~ "German",
+      term == "french" ~ "French",
+      term == "italian" ~ "Italian",
+      term == "excel" ~ "Excel",
+      term == "python" ~ "Python",
+      term == "flexib" ~ "Flexible",
+      term == "business" ~ "Business awareness",
+      term == "power" ~ "Power BI",
+      term == "azure" ~ "Azure",
+      term == "aws" ~ "AWS",
+      term == "creativ" ~ "Creativity",
+      term == "curio" ~ "Curiosity",
+      term == "detail" ~ "Attention to detail",
+      term == "communicat|present" ~ "Communication and presentation skills",
+      term == "report" ~ "Reporting experience",
+      term == "tableau" ~ "Tableu",
+      term == "data quality" ~ "Data quality management",
+      term == "trend" ~ "Tren analysis",
+      term == "vba" ~ "VBA",
+      term == "project" ~ "Project management",
+      term == "agile" ~ "Agile",
+      term == "cloud" ~ "Cloud",
+      term == "compliance" ~ "Compliance",
+      term == "cooper|collab|team|interpers" ~ "Interpersonal and collaboration skills",
+      term == "dashboard" ~ "Dashboard design",
+      term == "warehouse" ~ "Data warehouse experience",
+      term == "decision" ~ "Decision making experience",
+      term == "consulting" ~ "Consulting experience",
+      term == "sap" ~ "SAP",
+      term == "data mana" ~ "Data management",
+      term == "machine learn|ml" ~ "Machine learning skills",
+      term == "kpi" ~ "KPIs",
+      term == "leadership" ~ "Leadership",
+      term == "sql" ~ "SQL/NoSQL",
+      term == "automation" ~ "Automation experience",
+      term == "research" ~ "Research experience",
+      term == "reliab" ~ "Proven reliability",
+      term == "rest|api" ~ "API skills",
+      term == "stakeholder" ~ "Stakeholder management",
+      term == "problem" ~ "Problem solving",
+      term == "(?<!\\w)r(?!\\w)" ~ "R",
+      term == "logist" ~ "Logistics"
+    )
+  )
+
+write_csv(skills_df, "skills_df.csv")
+```
+
+
+## Visualize the data
+
+```{r}
+skills_df <- read_csv("skills_df.csv")
+
+skills_df |>
+  head(28) |>
+  mutate(
+    term = as_factor(term)
+  ) |>
+  filter(term != "Analytics") |> ### This category is largest - which makes sense, but we know it from the job description :)
+  ggplot(aes(x = fct_infreq(term), y = count)) +
+  geom_bar(stat = 'identity', fill = "steelblue", color = "grey20") +
+  coord_flip() +
+  scale_x_discrete(limits = rev) +
+  theme_bw() +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(colour = "grey50", size = 0.5),
+    text = element_text(family = "Corbel")#,
+    #axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size = 9)
+    ) +
+  labs(
+    x = "GPT-detected keyword",
+    y = "Count"
+  )
+  
+```
+
+Rough observations on the results:
+* Expected; Core soft skills and business awareness up top
+* Python and SQL come up as the two core hard skills
+* German/English language dominance
+* Continuing reliance on Excel
+
+Surprises:
+* Low rating for Curiosity - prefer hire for dashboard design not for drive for wanting knowledge. Omitted key trait, or is it unprovable.
+* Low Power BI/Tableau rating. While these are promoted as key data analyst tools, they trail behind SQL and Python. Could be quirk of data, the Adzuna job board, or anything else - still a flag that mirrors some of personal ad-hoc Linked in views. They trail behind ML, or a combination of more traditionally IT fields, such as Cloud expertise.
+* API skills show up at analyst level.
+* Low ranking of research experience!!!
+* Low ranking of data management skills
+
+
+

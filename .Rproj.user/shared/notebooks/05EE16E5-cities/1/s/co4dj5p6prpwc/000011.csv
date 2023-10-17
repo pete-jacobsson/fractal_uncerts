@@ -1,0 +1,13 @@
+"0","cities_data <- cities_data_raw |>
+  select(Name, Latitude, Longitude, `Country Code`, Population, Country) |>
+  rename(""name"" = 1, ""lat"" = 2, ""long"" = 3, ""country_code"" = 4,
+         ""population"" = 5,, ""country"" = 6) |>
+  filter(population > 0)
+"
+"1","[1m[33mError[39m in `select()`:[22m
+[33m![39m Can't subset columns that don't exist.
+[31m✖[39m Column `Name` doesn't exist.
+Backtrace:
+[90m 1. [39m[1mdplyr[22m::filter(...)
+[90m 4. [39m[1m[94mdplyr:::select.data.frame([39m[22m...[1m[94m)[39m[22m
+"
